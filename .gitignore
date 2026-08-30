@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+#
+personal/
+
+# Claude Code local settings
+.claude/
+
+# Generated captures and datasets (large, regenerable)
+data/
+
+# Raw MAVLink capture files
+*.tlog
+*.pcap
