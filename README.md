@@ -31,3 +31,40 @@ autopilots, ArduPilot and PX4. Its security posture is weak by design:
 So command injection, GPS spoofing, parameter tampering, and replay are realistic
 threats against real aircraft. This project detects attacks carried *over the
 drone's own control protocol* — the layer above raw RF detection.
+
+---
+
+## Architecture
+
+```
+   ┌── benign GCS (MAVProxy) ──┐
+   │      (normal traffic)      │
+ [ SITL drone ] ── UDP ─► capture ─► parse ─► detect ─► alerts
+   │                       (live /   (pymav-    │        (console/JSON)
+   └── attacker scripts ──►  replay)  link)     │
+        (eval-only)                             ├─ L1  rule engine  (done)
+                                                └─ L2  anomaly / ML (planned)
+```
+
+- **capture** — replay a saved capture for repeatable runs (`.tlog`), or tap a
+  live UDP link.
+- **parse** — `pymavlink` decodes bytes into normalized `Event` records (who sent
+  it, what type, when, was it signed, and the payload).
+- **detect** — two layers combined into a verdict.
+- **alert** — explainable console output and JSON Lines for the eval harness.
+
+## Detection: two layers on purpose
+
+**Layer 1 — signature / rule engine** (implemented). Deterministic,
+high-precision, explainable. Each rule returns a plain-language reason a human
+operator can act on. Current rules: a command from an unexpected system id (rogue
+GCS), and a disarm command — flagged **critical** when it carries the "force"
+flag that bypasses the in-flight safety check.
+
+**Layer 2 — anomaly / ML** (planned). Learn what normal flight looks like and
+flag deviations the rules miss (unsupervised to start: Isolation Forest / One-Class
+SVM / a small autoencoder over the feature set).
+
+The tradeoff, stated plainly: **rules give precision and explainability; the ML
+layer gives coverage of novel or subtle attacks.** Using both — and knowing why —
+is the point.
