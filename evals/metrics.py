@@ -16,21 +16,25 @@ as much as recall.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mavlink_ids.parse.decoder import Event
 
 
-def load_labeled(path: str) -> list[tuple[Event, str]]:
-    """Read a labeled JSONL dataset back into (Event, label) pairs."""
-    pairs: list[tuple[Event, str]] = []
+def load_labeled(path: str) -> list[tuple[Event, str, str]]:
+    """Read a labeled JSONL dataset into (Event, label, attack_type) triples.
+
+    `attack_type` is "" for benign events; for attacks it names the kind, so we
+    can report a per-attack-type detection rate.
+    """
+    rows: list[tuple[Event, str, str]] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
             label = row.pop("label")
-            row.pop("attack_type", None)  # not needed for scoring
-            pairs.append((Event(**row), label))
-    return pairs
+            attack_type = row.pop("attack_type", "")
+            rows.append((Event(**row), label, attack_type))
+    return rows
 
 
 @dataclass
@@ -43,6 +47,8 @@ class EvalResult:
     tn: int  # benign events we correctly left alone
     latency_ms: float | None = None    # attack onset -> first alert, milliseconds
     latency_msgs: int | None = None    # attack onset -> first alert, message count
+    # attack_type -> (caught, total), for per-attack detection rate
+    per_type: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def recall(self) -> float:
@@ -65,7 +71,7 @@ class EvalResult:
         return self.fp / benign if benign else 0.0
 
 
-def evaluate(labeled: list[tuple[Event, str]], engine) -> EvalResult:
+def evaluate(labeled: list[tuple[Event, str, str]], engine) -> EvalResult:
     """Run `engine` over labeled events and score it.
 
     `engine` is anything with a `.check(event) -> list` method (our RuleEngine).
@@ -77,13 +83,20 @@ def evaluate(labeled: list[tuple[Event, str]], engine) -> EvalResult:
     onset_time: float | None = None
     alert_index: int | None = None
     alert_time: float | None = None
+    # attack_type -> [caught, total]
+    type_counts: dict[str, list[int]] = {}
 
-    for i, (event, label) in enumerate(labeled):
+    for i, (event, label, attack_type) in enumerate(labeled):
         flagged = len(engine.check(event)) > 0
         is_attack = label == "attack"
 
-        if is_attack and onset_index is None:
-            onset_index, onset_time = i, event.timestamp
+        if is_attack:
+            if onset_index is None:
+                onset_index, onset_time = i, event.timestamp
+            counts = type_counts.setdefault(attack_type, [0, 0])
+            counts[1] += 1              # total of this type
+            if flagged:
+                counts[0] += 1          # caught
 
         # First alert at or after the attack onset (measures detection latency).
         if onset_index is not None and flagged and alert_index is None:
@@ -104,4 +117,5 @@ def evaluate(labeled: list[tuple[Event, str]], engine) -> EvalResult:
         latency_msgs = alert_index - onset_index
         latency_ms = (alert_time - onset_time) * 1000.0  # type: ignore[operator]
 
-    return EvalResult(tp, fp, fn, tn, latency_ms, latency_msgs)
+    per_type = {atype: (c[0], c[1]) for atype, c in type_counts.items()}
+    return EvalResult(tp, fp, fn, tn, latency_ms, latency_msgs, per_type)
