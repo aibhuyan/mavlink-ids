@@ -121,21 +121,41 @@ The attacks this system targets, all carried over the MAVLink C2 link:
 | GCS spoofing | Rogue system/component id | Unauthorized control | A second GCS appears; unexpected sysid/compid |
 | DoS | `HEARTBEAT` flood, `RC_OVERRIDE` spam | Link saturation | Message-rate spikes; many sources |
 
-## Results so far
+## Results
 
-The proving phase (full labeled dataset → measured recall / false-positive rate /
-latency) is in progress. Established to date:
+**Dataset:** one real benign flight from ArduPilot SITL (**99,930 events**) with
+**4 attacks** injected at known times — command injection, parameter tampering,
+GPS spoofing, and replay.
 
-- **Command injection (forced disarm) is detected** — verified in unit tests; the
-  rogue-sysid and forced-disarm rules both fire as `critical`.
-- **Zero false positives** across all **99,930 events** of a real benign flight
-  captured from ArduPilot SITL.
-- The attack is real, not theoretical: injecting a forced disarm dropped the
-  simulated drone from a hover to a **14.7 m/s** ground impact (vs. a normal
-  0.5 m/s landing).
+**Layer 1 (rules only) — baseline:**
 
-A baseline-vs-improved metrics table (rules only, then rules + anomaly layer) will
-land here once the eval harness and dataset are complete.
+| Metric | Value |
+|---|---|
+| Recall | **50%** |
+| Precision | **100%** |
+| False-positive rate | **0.000** |
+| F1 | 0.667 |
+| Detection latency | 0 messages |
+
+**Per-attack detection (rules only):**
+
+| Attack | Detected? |
+|---|---|
+| Command injection (forced disarm) | ✅ 100% |
+| Parameter tampering (`PARAM_SET`) | ✅ 100% |
+| GPS spoofing (`GPS_INPUT` jump) | ❌ 0% |
+| Replay (duplicated command) | ❌ 0% |
+
+The rules catch command-style attacks with **perfect precision and zero false
+positives**, but are blind to GPS spoofing (telemetry, not a command) and replay
+(no sequence tracking). Closing that gap is the job of **Layer 2 (anomaly / ML)**,
+which is in progress — the rules-vs-improved comparison will land here next.
+
+> The attacks are real, not theoretical: injecting a forced disarm dropped the
+> simulated drone from a hover to a **14.7 m/s** ground impact, versus a normal
+> **0.5 m/s** landing.
+
+Reproduce: `uv run python evals/make_dataset.py && uv run python evals/run_suite.py`
 
 ## Roadmap
 
@@ -143,9 +163,10 @@ land here once the eval harness and dataset are complete.
 - [x] Simulation lab (ArduPilot SITL) + benign capture
 - [x] Eval-only attack script (command injection)
 - [x] Layer 1 rule engine + explainable alerts
-- [ ] Labeled dataset (more benign flights + all attack types)
-- [ ] Eval harness: recall / precision / F1 / FPR / latency
-- [ ] Layer 2 anomaly / ML detector
+- [x] Labeled dataset (benign flight + 4 attack types)
+- [x] Eval harness: recall / precision / F1 / FPR / latency + per-attack recall
+- [ ] Layer 2 anomaly / ML detector (in progress)
+- [ ] More benign flights + live attack captures
 - [ ] CLI and a small alert-timeline dashboard
 
 ## Tech
