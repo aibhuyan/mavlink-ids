@@ -46,8 +46,14 @@ class RuleEngine:
 
     def __init__(self, allowed_sysids: Iterable[int] = DEFAULT_ALLOWED_SYSIDS):
         self.allowed_sysids = set(allowed_sysids)
+        # Fingerprints of commands already seen, for replay detection.
+        self._seen_commands: set[tuple] = set()
         # The rules to run, in order.
-        self._rules = (self._rule_unexpected_sysid, self._rule_forced_disarm)
+        self._rules = (
+            self._rule_unexpected_sysid,
+            self._rule_forced_disarm,
+            self._rule_replay,
+        )
 
     def check(self, event: Event) -> list[Alert]:
         """Run every rule on one event; return any alerts they raise."""
@@ -115,3 +121,37 @@ class RuleEngine:
                 "param2": event.fields.get("param2"),
             },
         )
+
+    def _rule_replay(self, event: Event) -> Alert | None:
+        """Flag a command identical to one already seen — a replay attack.
+
+        A replay re-sends a genuine packet, so its source looks trusted and its
+        payload is valid. The tell is that it is an *exact duplicate*: same
+        source, sequence number, and command payload as an earlier message.
+        """
+        if event.msg_type not in COMMAND_TYPES:
+            return None
+        fingerprint = (
+            event.sysid,
+            event.compid,
+            event.msg_type,
+            event.seq,
+            event.fields.get("command"),
+            event.fields.get("param1"),
+            event.fields.get("param2"),
+        )
+        if fingerprint in self._seen_commands:
+            return Alert(
+                timestamp=event.timestamp,
+                severity="warning",
+                rule="replay",
+                message=(
+                    f"Duplicate {event.msg_type} (seq {event.seq}) from sysid "
+                    f"{event.sysid} — identical to an earlier command (replay)"
+                ),
+                sysid=event.sysid,
+                msg_type=event.msg_type,
+                context={"seq": event.seq},
+            )
+        self._seen_commands.add(fingerprint)
+        return None

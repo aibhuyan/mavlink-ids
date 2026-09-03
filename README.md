@@ -80,7 +80,7 @@ your own captures you also need ArduPilot SITL — see
 **Install and test:**
 
 ```bash
-git clone https://github.com/<you>/mavlink-ids.git
+git clone https://github.com/aibhuyan/mavlink-ids.git
 cd mavlink-ids
 uv sync                 # create the environment from the locked dependencies
 uv run pytest -q        # run the test suite
@@ -127,29 +127,33 @@ The attacks this system targets, all carried over the MAVLink C2 link:
 **4 attacks** injected at known times — command injection, parameter tampering,
 GPS spoofing, and replay.
 
-**Layer 1 (rules only) — baseline:**
+**Baseline vs. improved:**
 
-| Metric | Value |
-|---|---|
-| Recall | **50%** |
-| Precision | **100%** |
-| False-positive rate | **0.000** |
-| F1 | 0.667 |
-| Detection latency | 0 messages |
+| Detector | Recall | Precision | FPR | F1 |
+|---|---|---|---|---|
+| Layer 1 — rules only | 75% | 100% | 0.000 | 0.857 |
+| Layer 1 + Layer 2 — rules + anomaly | **100%** | 80% | 0.00001 | 0.889 |
 
-**Per-attack detection (rules only):**
+**Per-attack detection:**
 
-| Attack | Detected? |
-|---|---|
-| Command injection (forced disarm) | ✅ 100% |
-| Parameter tampering (`PARAM_SET`) | ✅ 100% |
-| GPS spoofing (`GPS_INPUT` jump) | ❌ 0% |
-| Replay (duplicated command) | ❌ 0% |
+| Attack | Rules | Rules + anomaly |
+|---|---|---|
+| Command injection (forced disarm) | ✅ | ✅ |
+| Parameter tampering (`PARAM_SET`) | ✅ | ✅ |
+| Replay (duplicated command) | ✅ | ✅ |
+| GPS spoofing (`GPS_INPUT` jump) | ❌ | ✅ |
 
-The rules catch command-style attacks with **perfect precision and zero false
-positives**, but are blind to GPS spoofing (telemetry, not a command) and replay
-(no sequence tracking). Closing that gap is the job of **Layer 2 (anomaly / ML)**,
-which is in progress — the rules-vs-improved comparison will land here next.
+The rule engine catches command-style attacks and replay with **perfect precision
+and zero false positives**, but is blind to GPS spoofing (it's telemetry, not a
+command). The **anomaly layer** — an Isolation Forest trained only on normal
+flight — catches the GPS spoof as an extreme position jump, lifting recall from
+**75% → 100%** while holding false positives to a single event (FPR 0.001%).
+Detection is immediate (0-message latency).
+
+> **Honest caveat:** these numbers come from a *single* benign flight, with the
+> anomaly threshold tuned on that same flight — so the false-positive rate is
+> optimistic. Multiple benign flights and a proper train/test split are the next
+> step for a robust estimate.
 
 > The attacks are real, not theoretical: injecting a forced disarm dropped the
 > simulated drone from a hover to a **14.7 m/s** ground impact, versus a normal
@@ -165,13 +169,13 @@ Reproduce: `uv run python evals/make_dataset.py && uv run python evals/run_suite
 - [x] Layer 1 rule engine + explainable alerts
 - [x] Labeled dataset (benign flight + 4 attack types)
 - [x] Eval harness: recall / precision / F1 / FPR / latency + per-attack recall
-- [ ] Layer 2 anomaly / ML detector (in progress)
-- [ ] More benign flights + live attack captures
+- [x] Layer 2 anomaly / ML detector (Isolation Forest)
+- [ ] More benign flights + train/test split for a robust FPR
 - [ ] CLI and a small alert-timeline dashboard
 
 ## Tech
 
-Python 3.12 · [uv](https://docs.astral.sh/uv/) · [pymavlink](https://github.com/ArduPilot/pymavlink) · ArduPilot SITL · pytest
+Python 3.12 · [uv](https://docs.astral.sh/uv/) · [pymavlink](https://github.com/ArduPilot/pymavlink) · [scikit-learn](https://scikit-learn.org/) · ArduPilot SITL · pytest
 
 ## Safety & scope
 

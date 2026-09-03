@@ -71,12 +71,14 @@ class EvalResult:
         return self.fp / benign if benign else 0.0
 
 
-def evaluate(labeled: list[tuple[Event, str, str]], engine) -> EvalResult:
-    """Run `engine` over labeled events and score it.
+def score_from_flags(
+    labeled: list[tuple[Event, str, str]], flags: list[bool]
+) -> EvalResult:
+    """Score precomputed per-event verdicts against the labels.
 
-    `engine` is anything with a `.check(event) -> list` method (our RuleEngine).
-    An event is "flagged" if the engine returns any alert for it. Latency is
-    measured from the attack's first event to the first alert at or after it.
+    `flags[i]` is True if the detector flagged event i. Keeping the counting
+    separate from the detector lets us score fast batched predictions, not just
+    per-event `.check()` calls.
     """
     tp = fp = fn = tn = 0
     onset_index: int | None = None
@@ -86,8 +88,7 @@ def evaluate(labeled: list[tuple[Event, str, str]], engine) -> EvalResult:
     # attack_type -> [caught, total]
     type_counts: dict[str, list[int]] = {}
 
-    for i, (event, label, attack_type) in enumerate(labeled):
-        flagged = len(engine.check(event)) > 0
+    for i, ((event, label, attack_type), flagged) in enumerate(zip(labeled, flags)):
         is_attack = label == "attack"
 
         if is_attack:
@@ -119,3 +120,13 @@ def evaluate(labeled: list[tuple[Event, str, str]], engine) -> EvalResult:
 
     per_type = {atype: (c[0], c[1]) for atype, c in type_counts.items()}
     return EvalResult(tp, fp, fn, tn, latency_ms, latency_msgs, per_type)
+
+
+def evaluate(labeled: list[tuple[Event, str, str]], engine) -> EvalResult:
+    """Run a detector over labeled events and score it (per-event `.check()`).
+
+    `engine` is anything with `.check(event) -> list`. Fine for the fast rule
+    engine; for the anomaly model, prefer batched flags via `score_from_flags`.
+    """
+    flags = [len(engine.check(event)) > 0 for event, _, _ in labeled]
+    return score_from_flags(labeled, flags)

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import argparse
 
+from mavlink_ids.detect.anomaly import AnomalyDetector
 from mavlink_ids.detect.rules import RuleEngine
 
-from metrics import EvalResult, evaluate, load_labeled
+from metrics import EvalResult, load_labeled, score_from_flags
 
 
 def format_report(dataset: str, result: EvalResult) -> str:
@@ -54,11 +55,33 @@ def main() -> None:
         default="data/labeled/attack_disarm_01.jsonl",
         help="path to a labeled JSONL dataset",
     )
+    parser.add_argument(
+        "--contamination",
+        type=float,
+        default=0.00001,
+        help="anomaly threshold: expected fraction of outliers (lower = stricter)",
+    )
     args = parser.parse_args()
 
     labeled = load_labeled(args.dataset)
-    result = evaluate(labeled, RuleEngine())
-    print(format_report(args.dataset, result))
+    events = [event for event, _, _ in labeled]
+
+    # Layer 1 (rules) — fast per-event.
+    rules = RuleEngine()
+    rule_flags = [bool(rules.check(event)) for event in events]
+    baseline = score_from_flags(labeled, rule_flags)
+    print(format_report("rules only (Layer 1)", baseline))
+    print()
+
+    # Layer 2 (anomaly) — train on benign, then batch-score the whole stream.
+    benign_events = [event for event, label, _ in labeled if label == "benign"]
+    anomaly = AnomalyDetector(contamination=args.contamination).fit(benign_events)
+    anomaly_flags = anomaly.predict_outliers(events)
+
+    # Combined verdict: an event is flagged if EITHER layer flags it.
+    combined_flags = [r or a for r, a in zip(rule_flags, anomaly_flags)]
+    improved = score_from_flags(labeled, combined_flags)
+    print(format_report("rules + anomaly (Layer 1 + Layer 2)", improved))
 
 
 if __name__ == "__main__":

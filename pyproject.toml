@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Imran Bhuyan", email = "bhuyanalimrans@gmail.com" }
+    { name = "Al Imran Bhuyan", email = "bhuyanalimrans@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
     "pymavlink>=2.4.49",
+    "scikit-learn>=1.9.0",
 ]
 
 [project.scripts]
