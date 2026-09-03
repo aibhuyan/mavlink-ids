@@ -68,3 +68,93 @@ SVM / a small autoencoder over the feature set).
 The tradeoff, stated plainly: **rules give precision and explainability; the ML
 layer gives coverage of novel or subtle attacks.** Using both — and knowing why —
 is the point.
+
+---
+
+## Quick start
+
+**Requirements:** Python 3.12+ and [uv](https://docs.astral.sh/uv/). To generate
+your own captures you also need ArduPilot SITL — see
+[`lab/run_sitl.md`](lab/run_sitl.md) for the full lab setup (WSL2 + ArduPilot).
+
+**Install and test:**
+
+```bash
+git clone https://github.com/<you>/mavlink-ids.git
+cd mavlink-ids
+uv sync                 # create the environment from the locked dependencies
+uv run pytest -q        # run the test suite
+```
+
+**Get a capture.** Recorded flights (`.tlog`) live under `data/` and are
+git-ignored (large, regenerable). Follow [`lab/run_sitl.md`](lab/run_sitl.md) to
+fly a mission and save it to `data/benign/`.
+
+**Run the detector over a capture:**
+
+```python
+from mavlink_ids.capture.replay import replay_file
+from mavlink_ids.detect.rules import RuleEngine
+from mavlink_ids.alert.sink import ConsoleSink
+
+engine = RuleEngine()
+sink = ConsoleSink()
+for _ in engine.run(replay_file("data/benign/benign_flight_01.tlog"), sink):
+    pass  # alerts print to the console as they fire
+```
+
+A single-command CLI (`uv run mavlink-ids <capture>`) is on the roadmap.
+
+---
+
+## Threat model
+
+The attacks this system targets, all carried over the MAVLink C2 link:
+
+| Attack | MAVLink mechanism | Impact | What gives it away |
+|---|---|---|---|
+| Command injection | `COMMAND_LONG` (arm/disarm, mode, RTL) | Vehicle hijack / crash | Command from an unexpected sysid; disarm mid-flight |
+| GPS spoofing | Injected `GPS_INPUT` / falsified position | Flies to wrong place | Position jump beyond physical limits; velocity discontinuity |
+| Parameter tampering | `PARAM_SET` on safety params | Disabled failsafes | Writes to critical params; unusual param traffic |
+| Mission tampering | `MISSION_ITEM` rewrite | Altered flight path | Mid-flight mission changes from a new source |
+| Replay | Re-sent valid packets | Repeated stale commands | Duplicate sequences/timestamps |
+| GCS spoofing | Rogue system/component id | Unauthorized control | A second GCS appears; unexpected sysid/compid |
+| DoS | `HEARTBEAT` flood, `RC_OVERRIDE` spam | Link saturation | Message-rate spikes; many sources |
+
+## Results so far
+
+The proving phase (full labeled dataset → measured recall / false-positive rate /
+latency) is in progress. Established to date:
+
+- **Command injection (forced disarm) is detected** — verified in unit tests; the
+  rogue-sysid and forced-disarm rules both fire as `critical`.
+- **Zero false positives** across all **99,930 events** of a real benign flight
+  captured from ArduPilot SITL.
+- The attack is real, not theoretical: injecting a forced disarm dropped the
+  simulated drone from a hover to a **14.7 m/s** ground impact (vs. a normal
+  0.5 m/s landing).
+
+A baseline-vs-improved metrics table (rules only, then rules + anomaly layer) will
+land here once the eval harness and dataset are complete.
+
+## Roadmap
+
+- [x] MAVLink parser → normalized events
+- [x] Simulation lab (ArduPilot SITL) + benign capture
+- [x] Eval-only attack script (command injection)
+- [x] Layer 1 rule engine + explainable alerts
+- [ ] Labeled dataset (more benign flights + all attack types)
+- [ ] Eval harness: recall / precision / F1 / FPR / latency
+- [ ] Layer 2 anomaly / ML detector
+- [ ] CLI and a small alert-timeline dashboard
+
+## Tech
+
+Python 3.12 · [uv](https://docs.astral.sh/uv/) · [pymavlink](https://github.com/ArduPilot/pymavlink) · ArduPilot SITL · pytest
+
+## Safety & scope
+
+This is a **defensive** project. The attack scripts exist only to test the
+detector against a **simulated** drone on localhost, and they refuse to run
+against any non-localhost target. Nothing transmits over radio, targets a real
+aircraft, or touches a network I don't own.
