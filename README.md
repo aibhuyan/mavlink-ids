@@ -7,10 +7,11 @@ that drones speak to their ground stations. It watches the command-and-control
 spoofing, replay, denial-of-service — in real time, with an explainable reason
 for every alert.
 
-> **Status:** Build phase complete — MAVLink parser, simulation lab, a red-team
-> attack, and an explainable rule engine that catches a live command-injection
-> with **zero false positives** on a real benign flight. Proving phase (full
-> labeled dataset, measured metrics, and an ML anomaly layer) in progress.
+> **Status:** Working two-layer IDS, built and measured end to end. Layer 1
+> (rules) catches command injection, parameter tampering, and replay with **zero
+> false positives** on a real benign flight; Layer 2 (an Isolation Forest anomaly
+> detector) adds GPS-spoof detection, lifting recall from **75% to 100%**. Next:
+> more benign flights and a train/test split to firm up the false-positive rate.
 
 > **Safety:** Everything is passive, simulated, and localhost-only. Nothing
 > transmits over radio, targets a real aircraft, or touches a network I don't
@@ -36,34 +37,71 @@ drone's own control protocol* — the layer above raw RF detection.
 
 ## Architecture
 
-```
-   ┌── benign GCS (MAVProxy) ──┐
-   │      (normal traffic)      │
- [ SITL drone ] ── UDP ─► capture ─► parse ─► detect ─► alerts
-   │                       (live /   (pymav-    │        (console/JSON)
-   └── attacker scripts ──►  replay)  link)     │
-        (eval-only)                             ├─ L1  rule engine  (done)
-                                                └─ L2  anomaly / ML (planned)
+```mermaid
+flowchart LR
+    GCS[Benign GCS - MAVProxy]
+    ATK[Attacker scripts - eval only]
+    SITL[SITL drone - ArduPilot]
+    LINK{{MAVLink UDP link}}
+    CAP[capture<br/>live tap or tlog replay]
+    PARSE[parse<br/>pymavlink to Event]
+    FEAT[features<br/>timing, position, sequence]
+    L1[Layer 1<br/>rule engine]
+    L2[Layer 2<br/>anomaly - Isolation Forest]
+    ENG[combine<br/>to verdict]
+    ALERT[alerts<br/>console / JSON]
+
+    GCS -->|normal traffic| LINK
+    ATK -->|injected attacks| LINK
+    SITL <--> LINK
+    LINK --> CAP --> PARSE
+    PARSE --> L1
+    PARSE --> FEAT --> L2
+    L1 --> ENG
+    L2 --> ENG
+    ENG --> ALERT
 ```
 
-- **capture** — replay a saved capture for repeatable runs (`.tlog`), or tap a
+Data flows left to right; each stage is one package under `src/mavlink_ids/`:
+
+- **capture** (`capture/`) — replay a saved `.tlog` for repeatable runs, or tap a
   live UDP link.
-- **parse** — `pymavlink` decodes bytes into normalized `Event` records (who sent
-  it, what type, when, was it signed, and the payload).
-- **detect** — two layers combined into a verdict.
-- **alert** — explainable console output and JSON Lines for the eval harness.
+- **parse** (`parse/decoder.py`) — `pymavlink` decodes bytes into normalized
+  `Event` records (who sent it, what type, when, was it signed, the payload).
+- **features** (`features/extract.py`) — turn each event into a numeric vector
+  (inter-message timing, position jumps, sequence gaps) for the model.
+- **detect** (`detect/`) — Layer 1 rules (`rules.py`) read events, Layer 2 anomaly
+  (`anomaly.py`) reads features, and `engine.py` unions them into one verdict.
+- **alert** (`alert/sink.py`) — explainable console output and JSON Lines for the
+  eval harness.
+
+### The lab in action
+
+ArduPilot SITL flying a GUIDED mission, viewed through MAVProxy's map and status
+console — the simulated drone that generates all the traffic the IDS analyses
+(the magenta track is the flight path):
+
+![ArduPilot SITL flying a GUIDED mission in MAVProxy's map and console](docs/screenshots/sitl-flight.png)
+
+A normal Return-To-Launch landing — the console reports touchdown at **0.5 m/s**
+and disarms. This is the benign baseline the detector must *not* alarm on
+(contrast the 14.7 m/s forced-disarm crash in the results below):
+
+![MAVProxy console showing a normal RTL landing at 0.5 m/s and disarm](docs/screenshots/sitl-landing.png)
 
 ## Detection: two layers on purpose
 
 **Layer 1 — signature / rule engine** (implemented). Deterministic,
 high-precision, explainable. Each rule returns a plain-language reason a human
 operator can act on. Current rules: a command from an unexpected system id (rogue
-GCS), and a disarm command — flagged **critical** when it carries the "force"
-flag that bypasses the in-flight safety check.
+GCS); a disarm command — flagged **critical** when it carries the "force" flag
+that bypasses the in-flight safety check; and a replay (an exact-duplicate
+command re-sent on the link).
 
-**Layer 2 — anomaly / ML** (planned). Learn what normal flight looks like and
-flag deviations the rules miss (unsupervised to start: Isolation Forest / One-Class
-SVM / a small autoencoder over the feature set).
+**Layer 2 — anomaly / ML** (implemented). An Isolation Forest trained only on
+normal flight learns the usual range of the features (timing, position jumps,
+sequence gaps) and flags deviations the rules miss — notably GPS spoofing, caught
+as an impossible position jump.
 
 The tradeoff, stated plainly: **rules give precision and explainability; the ML
 layer gives coverage of novel or subtle attacks.** Using both — and knowing why —
